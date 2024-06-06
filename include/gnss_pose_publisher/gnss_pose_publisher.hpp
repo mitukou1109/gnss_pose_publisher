@@ -4,6 +4,7 @@
 #include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
 #include <geometry_msgs/msg/quaternion_stamped.hpp>
 #include <sensor_msgs/msg/nav_sat_fix.hpp>
+#include <tf2_ros/static_transform_broadcaster.h>
 
 #include "llh_converter/llh_converter.hpp"
 
@@ -22,11 +23,17 @@ private:
 
   void headingCallback(const geometry_msgs::msg::QuaternionStamped::SharedPtr msg);
 
+  void initialposeCallback(const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr msg);
+
   rclcpp::Publisher<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr pose_with_covariance_pub_;
 
   rclcpp::Subscription<sensor_msgs::msg::NavSatFix>::SharedPtr fix_sub_;
 
   rclcpp::Subscription<geometry_msgs::msg::QuaternionStamped>::SharedPtr heading_sub_;
+
+  rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr initialpose_sub_;
+
+  std::unique_ptr<tf2_ros::StaticTransformBroadcaster> static_tf_broadcaster_;
 
   llh_converter::LLHConverter llh_converter_;
 
