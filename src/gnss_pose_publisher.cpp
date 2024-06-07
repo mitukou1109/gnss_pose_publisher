@@ -68,7 +68,10 @@ void GNSSPosePublisher::initialposeCallback(const geometry_msgs::msg::PoseWithCo
   map_to_gnss_tf.transform.translation.x = -pose_with_covariance_.pose.pose.position.x;
   map_to_gnss_tf.transform.translation.y = -pose_with_covariance_.pose.pose.position.y;
   map_to_gnss_tf.transform.translation.z = -pose_with_covariance_.pose.pose.position.z;
-  map_to_gnss_tf.transform.rotation = pose_with_covariance_.pose.pose.orientation;
+  map_to_gnss_tf.transform.rotation.x = -pose_with_covariance_.pose.pose.orientation.x;
+  map_to_gnss_tf.transform.rotation.y = -pose_with_covariance_.pose.pose.orientation.y;
+  map_to_gnss_tf.transform.rotation.z = -pose_with_covariance_.pose.pose.orientation.z;
+  map_to_gnss_tf.transform.rotation.w = -pose_with_covariance_.pose.pose.orientation.w;
 
   static_tf_broadcaster_->sendTransform(map_to_gnss_tf);
 }
