@@ -7,10 +7,16 @@ endif()
 
 find_package(ament_cmake_auto REQUIRED)
 
+set(CMAKE_MODULE_PATH "${CMAKE_MODULE_PATH};/usr/share/cmake/geographiclib")
+find_package(GeographicLib REQUIRED)
+
 ament_auto_find_build_dependencies()
 
 ament_auto_add_library(${PROJECT_NAME} SHARED
   src/gnss_pose_publisher.cpp
+)
+target_link_libraries(${PROJECT_NAME}
+  ${GeographicLib_LIBRARIES}
 )
 
 rclcpp_components_register_node(${PROJECT_NAME}
