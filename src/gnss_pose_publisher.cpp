@@ -1,25 +1,27 @@
 #include "gnss_pose_publisher/gnss_pose_publisher.hpp"
 
-#include <rclcpp_components/register_node_macro.hpp>
-#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
-
 #include <GeographicLib/MGRS.hpp>
 #include <GeographicLib/UTMUPS.hpp>
+#include <rclcpp_components/register_node_macro.hpp>
+
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 
 namespace gnss_pose_publisher
 {
-GNSSPosePublisher::GNSSPosePublisher(const rclcpp::NodeOptions& options)
-  : GNSSPosePublisher("gnss_pose_publisher", "", options)
+GNSSPosePublisher::GNSSPosePublisher(const rclcpp::NodeOptions & options)
+: GNSSPosePublisher("gnss_pose_publisher", "", options)
 {
 }
 
-GNSSPosePublisher::GNSSPosePublisher(const std::string& node_name, const std::string& ns,
-                                     const rclcpp::NodeOptions& options)
-  : Node(node_name, ns, options)
+GNSSPosePublisher::GNSSPosePublisher(
+  const std::string & node_name, const std::string & ns, const rclcpp::NodeOptions & options)
+: Node(node_name, ns, options)
 {
-  global_frame_ = declare_parameter<std::string>("global_frame");
+  earth_frame_ = declare_parameter<std::string>("earth_frame");
+  map_frame_ = declare_parameter<std::string>("map_frame");
+  odom_frame_ = declare_parameter<std::string>("odom_frame");
   base_frame_ = declare_parameter<std::string>("base_frame");
-  const auto publish_rate = declare_parameter<double>("publish_rate");
+  transform_tolerance_ = declare_parameter<double>("transform_tolerance");
 
   initializeLocalCartesian(declare_parameter<std::string>("local_cartesian_origin_grid"));
 
@@ -29,110 +31,100 @@ GNSSPosePublisher::GNSSPosePublisher(const std::string& node_name, const std::st
   tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
   pose_with_covariance_pub_ =
-      create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>("gnss/pose_with_covariance", 1);
-
-  set_origin_srv_ = create_service<std_srvs::srv::Trigger>(
-      "~/set_origin", std::bind(&GNSSPosePublisher::setOrigin, this, std::placeholders::_1, std::placeholders::_2));
+    create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>("gnss/pose_with_covariance", 1);
 
   fix_sub_ = create_subscription<sensor_msgs::msg::NavSatFix>(
-      "gnss/fix", 10, std::bind(&GNSSPosePublisher::fixCallback, this, std::placeholders::_1));
+    "gnss/fix", 1, std::bind(&GNSSPosePublisher::fixCallback, this, std::placeholders::_1));
 
   heading_sub_ = create_subscription<geometry_msgs::msg::QuaternionStamped>(
-      "gnss/heading", 10, std::bind(&GNSSPosePublisher::headingCallback, this, std::placeholders::_1));
-
-  publish_tf_timer_ =
-      create_wall_timer(rclcpp::Rate(publish_rate).period(), std::bind(&GNSSPosePublisher::publishTF, this));
+    "gnss/heading", 1, std::bind(&GNSSPosePublisher::headingCallback, this, std::placeholders::_1));
 }
 
 void GNSSPosePublisher::fixCallback(const sensor_msgs::msg::NavSatFix::SharedPtr msg)
 {
-  if (!local_cartesian_)
-  {
+  if (!local_cartesian_) {
+    return;
+  }
+
+  if (msg->status.status != sensor_msgs::msg::NavSatStatus::STATUS_GBAS_FIX) {
     return;
   }
 
   pose_with_covariance_.header = msg->header;
-  auto& pose = pose_with_covariance_.pose;
 
-  try
-  {
-    local_cartesian_->Forward(msg->latitude, msg->longitude, msg->altitude, pose.pose.position.x, pose.pose.position.y,
-                              pose.pose.position.z);
-  }
-  catch (const std::exception& e)
-  {
-    RCLCPP_ERROR(this->get_logger(), "Failed to convert LLA to XYZ: %s", e.what());
+  auto & pose = pose_with_covariance_.pose;
+  try {
+    local_cartesian_->Forward(
+      msg->latitude, msg->longitude, msg->altitude, pose.pose.position.x, pose.pose.position.y,
+      pose.pose.position.z);
+  } catch (const std::exception & e) {
+    RCLCPP_ERROR(get_logger(), "Failed to convert LLA to XYZ: %s", e.what());
     return;
   }
 
-  for (auto i = 0; i < 3; i++)
-  {
+  for (auto i = 0; i < 3; i++) {
     pose.covariance[i * 6 + i] = msg->position_covariance[i * 3 + i];
   }
 
-  position_initialized_ = true;
+  publishPose();
 }
 
 void GNSSPosePublisher::headingCallback(const geometry_msgs::msg::QuaternionStamped::SharedPtr msg)
 {
+  pose_with_covariance_.header = msg->header;
   pose_with_covariance_.pose.pose.orientation = msg->quaternion;
-  orientation_initialized_ = true;
+
+  publishPose();
 }
 
-void GNSSPosePublisher::setOrigin(const std_srvs::srv::Trigger::Request::SharedPtr /* request */,
-                                  std_srvs::srv::Trigger::Response::SharedPtr response)
+void GNSSPosePublisher::publishPose()
 {
-  if (!position_initialized_ || !orientation_initialized_)
-  {
-    response->success = false;
-    response->message = "Position or orientation is not initialized yet.";
+  pose_with_covariance_pub_->publish(pose_with_covariance_);
+
+  tf2::Transform base_to_earth_tf;
+  tf2::fromMsg(pose_with_covariance_.pose.pose, base_to_earth_tf);
+  const auto & tf_stamp = pose_with_covariance_.header.stamp;
+
+  if (odom_frame_.empty()) {
+    publishTF(base_to_earth_tf, earth_frame_, base_frame_, tf_stamp);
     return;
   }
 
-  tf2::Transform base_to_global_tf;
-  try
-  {
-    tf2::fromMsg(tf_buffer_->lookupTransform(global_frame_, base_frame_, tf2::TimePointZero).transform,
-                 base_to_global_tf);
+  const auto odom_to_base_tf = getTransform(base_frame_, odom_frame_, tf_stamp);
+  if (!odom_to_base_tf) {
+    return;
   }
-  catch (tf2::TransformException& ex)
-  {
-    RCLCPP_ERROR(this->get_logger(), ex.what());
+  const auto odom_to_earth_tf = base_to_earth_tf * *odom_to_base_tf;
+
+  if (map_frame_.empty()) {
+    publishTF(odom_to_earth_tf, earth_frame_, odom_frame_, tf_stamp);
     return;
   }
 
-  if (!gnss_to_global_tf_)
-  {
-    gnss_to_global_tf_.emplace();
-    gnss_to_global_tf_->header.frame_id = global_frame_;
+  const auto map_to_earth_tf = getTransform(earth_frame_, map_frame_, tf_stamp);
+  if (!map_to_earth_tf) {
+    return;
   }
-
-  tf2::Transform base_to_gnss_tf;
-  tf2::fromMsg(pose_with_covariance_.pose.pose, base_to_gnss_tf);
-
-  gnss_to_global_tf_->child_frame_id = pose_with_covariance_.header.frame_id;
-  tf2::toMsg(base_to_global_tf * base_to_gnss_tf.inverse(), gnss_to_global_tf_->transform);
+  const auto map_to_odom_tf = odom_to_earth_tf.inverse() * *map_to_earth_tf;
+  publishTF(map_to_odom_tf, odom_frame_, map_frame_, tf_stamp);
 }
 
-void GNSSPosePublisher::publishTF()
+void GNSSPosePublisher::publishTF(
+  const tf2::Transform & tf, const std::string & frame_id, const std::string & child_frame_id,
+  const rclcpp::Time & stamp)
 {
-  if (gnss_to_global_tf_)
-  {
-    gnss_to_global_tf_->header.stamp = now();
-    tf_broadcaster_->sendTransform(*gnss_to_global_tf_);
-  }
+  geometry_msgs::msg::TransformStamped transform;
+  transform.header.stamp = stamp;
+  transform.header.frame_id = frame_id;
+  transform.child_frame_id = child_frame_id;
+  transform.transform = tf2::toMsg(tf);
 
-  if (position_initialized_ && orientation_initialized_)
-  {
-    pose_with_covariance_.header.stamp = now();
-    pose_with_covariance_pub_->publish(pose_with_covariance_);
-  }
+  tf_broadcaster_->sendTransform(transform);
 }
 
-void GNSSPosePublisher::initializeLocalCartesian(const std::string& origin_grid)
+void GNSSPosePublisher::initializeLocalCartesian(const std::string & origin_grid)
 {
-  try
-  {
+  try {
     int zone;
     bool northp;
     double x, y;
@@ -144,11 +136,32 @@ void GNSSPosePublisher::initializeLocalCartesian(const std::string& origin_grid)
     GeographicLib::UTMUPS::Reverse(zone, northp, x, y, lat, lon, gamma, k);
 
     local_cartesian_ = std::make_unique<GeographicLib::LocalCartesian>(lat, lon);
+  } catch (const std::exception & e) {
+    RCLCPP_ERROR(get_logger(), "Failed to initialize local cartesian origin: %s", e.what());
+    rclcpp::shutdown();
   }
-  catch (const std::exception& e)
-  {
-    RCLCPP_ERROR(this->get_logger(), "Failed to initialize local cartesian origin: %s", e.what());
+}
+
+std::optional<tf2::Transform> GNSSPosePublisher::getTransform(
+  const std::string & source_frame, const std::string & target_frame,
+  const rclcpp::Time & stamp) const
+{
+  tf2::Transform map_to_earth_tf;
+
+  try {
+    tf2::fromMsg(
+      tf_buffer_
+        ->lookupTransform(
+          source_frame, target_frame, stamp, rclcpp::Duration::from_seconds(transform_tolerance_))
+        .transform,
+      map_to_earth_tf);
+  } catch (const tf2::TransformException & ex) {
+    RCLCPP_WARN_THROTTLE(
+      get_logger(), *std::const_pointer_cast<rclcpp::Clock>(get_clock()), 10000, "%s", ex.what());
+    return std::nullopt;
   }
+
+  return map_to_earth_tf;
 }
 }  // namespace gnss_pose_publisher
 
