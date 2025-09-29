@@ -27,11 +27,7 @@ private:
 
   void headingCallback(const geometry_msgs::msg::QuaternionStamped::SharedPtr msg);
 
-  void publishPose();
-
-  void publishTF(
-    const tf2::Transform & tf, const std::string & frame_id, const std::string & child_frame_id,
-    const rclcpp::Time & stamp);
+  void publishTF();
 
   void initializeLocalCartesian(const std::string & origin_grid);
 
@@ -44,6 +40,7 @@ private:
   std::string odom_frame_;
   std::string base_frame_;
   double transform_tolerance_;
+  double tf_publish_rate_;
 
   geometry_msgs::msg::PoseWithCovarianceStamped pose_with_covariance_;
 
@@ -59,5 +56,7 @@ private:
 
   rclcpp::Subscription<sensor_msgs::msg::NavSatFix>::SharedPtr fix_sub_;
   rclcpp::Subscription<geometry_msgs::msg::QuaternionStamped>::SharedPtr heading_sub_;
+
+  rclcpp::TimerBase::SharedPtr publish_tf_timer_;
 };
 }  // namespace gnss_pose_publisher

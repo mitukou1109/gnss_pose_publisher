@@ -22,6 +22,7 @@ GNSSPosePublisher::GNSSPosePublisher(
   odom_frame_ = declare_parameter<std::string>("odom_frame");
   base_frame_ = declare_parameter<std::string>("base_frame");
   transform_tolerance_ = declare_parameter<double>("transform_tolerance");
+  tf_publish_rate_ = declare_parameter<double>("tf_publish_rate");
 
   initializeLocalCartesian(declare_parameter<std::string>("local_cartesian_origin_grid"));
 
@@ -38,6 +39,9 @@ GNSSPosePublisher::GNSSPosePublisher(
 
   heading_sub_ = create_subscription<geometry_msgs::msg::QuaternionStamped>(
     "gnss/heading", 1, std::bind(&GNSSPosePublisher::headingCallback, this, std::placeholders::_1));
+
+  publish_tf_timer_ = create_wall_timer(
+    rclcpp::Rate(tf_publish_rate_).period(), std::bind(&GNSSPosePublisher::publishTF, this));
 }
 
 void GNSSPosePublisher::fixCallback(const sensor_msgs::msg::NavSatFix::SharedPtr msg)
@@ -66,60 +70,56 @@ void GNSSPosePublisher::fixCallback(const sensor_msgs::msg::NavSatFix::SharedPtr
     pose.covariance[i * 6 + i] = msg->position_covariance[i * 3 + i];
   }
 
-  publishPose();
+  pose_with_covariance_pub_->publish(pose_with_covariance_);
 }
 
 void GNSSPosePublisher::headingCallback(const geometry_msgs::msg::QuaternionStamped::SharedPtr msg)
 {
   pose_with_covariance_.header = msg->header;
   pose_with_covariance_.pose.pose.orientation = msg->quaternion;
-
-  publishPose();
+  pose_with_covariance_pub_->publish(pose_with_covariance_);
 }
 
-void GNSSPosePublisher::publishPose()
+void GNSSPosePublisher::publishTF()
 {
-  pose_with_covariance_pub_->publish(pose_with_covariance_);
+  const auto stamp = now();
+  const auto send_transform = [this, stamp](
+                                const tf2::Transform & tf, const std::string & frame_id,
+                                const std::string & child_frame_id) {
+    geometry_msgs::msg::TransformStamped transform;
+    transform.header.stamp = stamp;
+    transform.header.frame_id = frame_id;
+    transform.child_frame_id = child_frame_id;
+    transform.transform = tf2::toMsg(tf);
+
+    tf_broadcaster_->sendTransform(transform);
+  };
 
   tf2::Transform base_to_earth_tf;
   tf2::fromMsg(pose_with_covariance_.pose.pose, base_to_earth_tf);
-  const auto & tf_stamp = pose_with_covariance_.header.stamp;
 
   if (odom_frame_.empty()) {
-    publishTF(base_to_earth_tf, earth_frame_, base_frame_, tf_stamp);
+    send_transform(base_to_earth_tf, earth_frame_, base_frame_);
     return;
   }
 
-  const auto odom_to_base_tf = getTransform(base_frame_, odom_frame_, tf_stamp);
+  const auto odom_to_base_tf = getTransform(base_frame_, odom_frame_, stamp);
   if (!odom_to_base_tf) {
     return;
   }
   const auto odom_to_earth_tf = base_to_earth_tf * *odom_to_base_tf;
 
   if (map_frame_.empty()) {
-    publishTF(odom_to_earth_tf, earth_frame_, odom_frame_, tf_stamp);
+    send_transform(odom_to_earth_tf, earth_frame_, odom_frame_);
     return;
   }
 
-  const auto map_to_earth_tf = getTransform(earth_frame_, map_frame_, tf_stamp);
-  if (!map_to_earth_tf) {
+  const auto earth_to_map_tf = getTransform(map_frame_, earth_frame_, stamp);
+  if (!earth_to_map_tf) {
     return;
   }
-  const auto map_to_odom_tf = odom_to_earth_tf.inverse() * *map_to_earth_tf;
-  publishTF(map_to_odom_tf, odom_frame_, map_frame_, tf_stamp);
-}
-
-void GNSSPosePublisher::publishTF(
-  const tf2::Transform & tf, const std::string & frame_id, const std::string & child_frame_id,
-  const rclcpp::Time & stamp)
-{
-  geometry_msgs::msg::TransformStamped transform;
-  transform.header.stamp = stamp;
-  transform.header.frame_id = frame_id;
-  transform.child_frame_id = child_frame_id;
-  transform.transform = tf2::toMsg(tf);
-
-  tf_broadcaster_->sendTransform(transform);
+  const auto odom_to_map_tf = *earth_to_map_tf * odom_to_earth_tf;
+  send_transform(odom_to_map_tf, map_frame_, odom_frame_);
 }
 
 void GNSSPosePublisher::initializeLocalCartesian(const std::string & origin_grid)
