@@ -21,6 +21,7 @@ GNSSPosePublisher::GNSSPosePublisher(
   map_frame_ = declare_parameter<std::string>("map_frame");
   odom_frame_ = declare_parameter<std::string>("odom_frame");
   base_frame_ = declare_parameter<std::string>("base_frame");
+  status_threshold_ = declare_parameter<int>("status_threshold");
   transform_tolerance_ = declare_parameter<double>("transform_tolerance");
   tf_publish_rate_ = declare_parameter<double>("tf_publish_rate");
 
@@ -50,7 +51,7 @@ void GNSSPosePublisher::fixCallback(const sensor_msgs::msg::NavSatFix::SharedPtr
     return;
   }
 
-  if (msg->status.status != sensor_msgs::msg::NavSatStatus::STATUS_GBAS_FIX) {
+  if (msg->status.status < status_threshold_) {
     return;
   }
 

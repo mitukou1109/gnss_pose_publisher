@@ -39,6 +39,7 @@ private:
   std::string map_frame_;
   std::string odom_frame_;
   std::string base_frame_;
+  int8_t status_threshold_;
   double transform_tolerance_;
   double tf_publish_rate_;
 
