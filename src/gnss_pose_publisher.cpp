@@ -147,7 +147,7 @@ std::optional<tf2::Transform> GNSSPosePublisher::getTransform(
   const std::string & source_frame, const std::string & target_frame,
   const rclcpp::Time & stamp) const
 {
-  tf2::Transform map_to_earth_tf;
+  tf2::Transform tf;
 
   try {
     tf2::fromMsg(
@@ -155,14 +155,14 @@ std::optional<tf2::Transform> GNSSPosePublisher::getTransform(
         ->lookupTransform(
           source_frame, target_frame, stamp, rclcpp::Duration::from_seconds(transform_tolerance_))
         .transform,
-      map_to_earth_tf);
+      tf);
   } catch (const tf2::TransformException & ex) {
     RCLCPP_WARN_THROTTLE(
       get_logger(), *std::const_pointer_cast<rclcpp::Clock>(get_clock()), 10000, "%s", ex.what());
     return std::nullopt;
   }
 
-  return map_to_earth_tf;
+  return tf;
 }
 }  // namespace gnss_pose_publisher
 
