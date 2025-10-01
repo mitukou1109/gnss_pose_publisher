@@ -17,7 +17,7 @@ GNSSPosePublisher::GNSSPosePublisher(
   const std::string & node_name, const std::string & ns, const rclcpp::NodeOptions & options)
 : Node(node_name, ns, options)
 {
-  earth_frame_ = declare_parameter<std::string>("earth_frame");
+  enu_frame_ = declare_parameter<std::string>("enu_frame");
   map_frame_ = declare_parameter<std::string>("map_frame");
   odom_frame_ = declare_parameter<std::string>("odom_frame");
   gnss_frame_ = declare_parameter<std::string>("gnss_frame");
@@ -108,11 +108,11 @@ void GNSSPosePublisher::publishTF()
     tf_broadcaster_->sendTransform(transform);
   };
 
-  tf2::Transform gnss_to_earth_tf;
-  tf2::fromMsg(pose_with_covariance_->pose.pose, gnss_to_earth_tf);
+  tf2::Transform gnss_to_enu_tf;
+  tf2::fromMsg(pose_with_covariance_->pose.pose, gnss_to_enu_tf);
 
   if (odom_frame_.empty()) {
-    send_transform(gnss_to_earth_tf, earth_frame_, gnss_frame_);
+    send_transform(gnss_to_enu_tf, enu_frame_, gnss_frame_);
     return;
   }
 
@@ -120,18 +120,18 @@ void GNSSPosePublisher::publishTF()
   if (!odom_to_gnss_tf) {
     return;
   }
-  const auto odom_to_earth_tf = gnss_to_earth_tf * *odom_to_gnss_tf;
+  const auto odom_to_enu_tf = gnss_to_enu_tf * *odom_to_gnss_tf;
 
   if (map_frame_.empty()) {
-    send_transform(odom_to_earth_tf, earth_frame_, odom_frame_);
+    send_transform(odom_to_enu_tf, enu_frame_, odom_frame_);
     return;
   }
 
-  const auto earth_to_map_tf = getTransform(map_frame_, earth_frame_, stamp);
-  if (!earth_to_map_tf) {
+  const auto enu_to_map_tf = getTransform(map_frame_, enu_frame_, stamp);
+  if (!enu_to_map_tf) {
     return;
   }
-  const auto odom_to_map_tf = *earth_to_map_tf * odom_to_earth_tf;
+  const auto odom_to_map_tf = *enu_to_map_tf * odom_to_enu_tf;
   send_transform(odom_to_map_tf, map_frame_, odom_frame_);
 }
 

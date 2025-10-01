@@ -35,7 +35,7 @@ private:
     const std::string & target_frame, const std::string & source_frame,
     const rclcpp::Time & stamp) const;
 
-  std::string earth_frame_;
+  std::string enu_frame_;
   std::string map_frame_;
   std::string odom_frame_;
   std::string gnss_frame_;
