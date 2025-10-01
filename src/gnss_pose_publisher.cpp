@@ -20,7 +20,7 @@ GNSSPosePublisher::GNSSPosePublisher(
   earth_frame_ = declare_parameter<std::string>("earth_frame");
   map_frame_ = declare_parameter<std::string>("map_frame");
   odom_frame_ = declare_parameter<std::string>("odom_frame");
-  base_frame_ = declare_parameter<std::string>("base_frame");
+  gnss_frame_ = declare_parameter<std::string>("gnss_frame");
   status_threshold_ = declare_parameter<int>("status_threshold");
   transform_tolerance_ = declare_parameter<double>("transform_tolerance");
   tf_publish_rate_ = declare_parameter<double>("tf_publish_rate");
@@ -55,9 +55,13 @@ void GNSSPosePublisher::fixCallback(const sensor_msgs::msg::NavSatFix::SharedPtr
     return;
   }
 
-  pose_with_covariance_.header = msg->header;
+  if (!pose_with_covariance_) {
+    pose_with_covariance_ = std::make_shared<geometry_msgs::msg::PoseWithCovarianceStamped>();
+  }
 
-  auto & pose = pose_with_covariance_.pose;
+  pose_with_covariance_->header = msg->header;
+
+  auto & pose = pose_with_covariance_->pose;
   try {
     local_cartesian_->Forward(
       msg->latitude, msg->longitude, msg->altitude, pose.pose.position.x, pose.pose.position.y,
@@ -71,18 +75,26 @@ void GNSSPosePublisher::fixCallback(const sensor_msgs::msg::NavSatFix::SharedPtr
     pose.covariance[i * 6 + i] = msg->position_covariance[i * 3 + i];
   }
 
-  pose_with_covariance_pub_->publish(pose_with_covariance_);
+  pose_with_covariance_pub_->publish(*pose_with_covariance_);
 }
 
 void GNSSPosePublisher::headingCallback(const geometry_msgs::msg::QuaternionStamped::SharedPtr msg)
 {
-  pose_with_covariance_.header = msg->header;
-  pose_with_covariance_.pose.pose.orientation = msg->quaternion;
-  pose_with_covariance_pub_->publish(pose_with_covariance_);
+  if (!pose_with_covariance_) {
+    return;
+  }
+
+  pose_with_covariance_->header = msg->header;
+  pose_with_covariance_->pose.pose.orientation = msg->quaternion;
+  pose_with_covariance_pub_->publish(*pose_with_covariance_);
 }
 
 void GNSSPosePublisher::publishTF()
 {
+  if (!pose_with_covariance_) {
+    return;
+  }
+
   const auto stamp = now();
   const auto send_transform = [this, stamp](
                                 const tf2::Transform & tf, const std::string & frame_id,
@@ -96,19 +108,19 @@ void GNSSPosePublisher::publishTF()
     tf_broadcaster_->sendTransform(transform);
   };
 
-  tf2::Transform base_to_earth_tf;
-  tf2::fromMsg(pose_with_covariance_.pose.pose, base_to_earth_tf);
+  tf2::Transform gnss_to_earth_tf;
+  tf2::fromMsg(pose_with_covariance_->pose.pose, gnss_to_earth_tf);
 
   if (odom_frame_.empty()) {
-    send_transform(base_to_earth_tf, earth_frame_, base_frame_);
+    send_transform(gnss_to_earth_tf, earth_frame_, gnss_frame_);
     return;
   }
 
-  const auto odom_to_base_tf = getTransform(base_frame_, odom_frame_, stamp);
-  if (!odom_to_base_tf) {
+  const auto odom_to_gnss_tf = getTransform(gnss_frame_, odom_frame_, stamp);
+  if (!odom_to_gnss_tf) {
     return;
   }
-  const auto odom_to_earth_tf = base_to_earth_tf * *odom_to_base_tf;
+  const auto odom_to_earth_tf = gnss_to_earth_tf * *odom_to_gnss_tf;
 
   if (map_frame_.empty()) {
     send_transform(odom_to_earth_tf, earth_frame_, odom_frame_);

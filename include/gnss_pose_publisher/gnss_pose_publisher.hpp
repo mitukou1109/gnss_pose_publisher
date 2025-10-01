@@ -38,12 +38,12 @@ private:
   std::string earth_frame_;
   std::string map_frame_;
   std::string odom_frame_;
-  std::string base_frame_;
+  std::string gnss_frame_;
   int8_t status_threshold_;
   double transform_tolerance_;
   double tf_publish_rate_;
 
-  geometry_msgs::msg::PoseWithCovarianceStamped pose_with_covariance_;
+  geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr pose_with_covariance_;
 
   std::unique_ptr<GeographicLib::LocalCartesian> local_cartesian_;
 
