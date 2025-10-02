@@ -17,7 +17,7 @@ GNSSPosePublisher::GNSSPosePublisher(
   const std::string & node_name, const std::string & ns, const rclcpp::NodeOptions & options)
 : Node(node_name, ns, options)
 {
-  enu_frame_ = declare_parameter<std::string>("enu_frame");
+  mgrs_frame_ = declare_parameter<std::string>("mgrs_frame");
   map_frame_ = declare_parameter<std::string>("map_frame");
   odom_frame_ = declare_parameter<std::string>("odom_frame");
   gnss_frame_ = declare_parameter<std::string>("gnss_frame");
@@ -57,9 +57,10 @@ void GNSSPosePublisher::fixCallback(const sensor_msgs::msg::NavSatFix::SharedPtr
 
   if (!pose_with_covariance_) {
     pose_with_covariance_ = std::make_shared<geometry_msgs::msg::PoseWithCovarianceStamped>();
+    pose_with_covariance_->header.frame_id = mgrs_frame_;
   }
 
-  pose_with_covariance_->header = msg->header;
+  pose_with_covariance_->header.stamp = msg->header.stamp;
 
   auto & pose = pose_with_covariance_->pose;
   try {
@@ -84,9 +85,15 @@ void GNSSPosePublisher::headingCallback(const geometry_msgs::msg::QuaternionStam
     return;
   }
 
-  pose_with_covariance_->header = msg->header;
-  pose_with_covariance_->pose.pose.orientation = msg->quaternion;
+  tf2::Quaternion heading_quat;
+  tf2::fromMsg(msg->quaternion, heading_quat);
+  heading_quat = tf2::Quaternion({0, 0, 1}, -M_PI_2) * heading_quat;
+
+  pose_with_covariance_->header.stamp = msg->header.stamp;
+  pose_with_covariance_->pose.pose.orientation = tf2::toMsg(heading_quat);
   pose_with_covariance_pub_->publish(*pose_with_covariance_);
+
+  sendTransform(tf2::Transform(heading_quat), msg->header.stamp, gnss_frame_, msg->header.frame_id);
 }
 
 void GNSSPosePublisher::publishTF()
@@ -96,23 +103,12 @@ void GNSSPosePublisher::publishTF()
   }
 
   const auto stamp = now();
-  const auto send_transform = [this, stamp](
-                                const tf2::Transform & tf, const std::string & frame_id,
-                                const std::string & child_frame_id) {
-    geometry_msgs::msg::TransformStamped transform;
-    transform.header.stamp = stamp;
-    transform.header.frame_id = frame_id;
-    transform.child_frame_id = child_frame_id;
-    transform.transform = tf2::toMsg(tf);
 
-    tf_broadcaster_->sendTransform(transform);
-  };
-
-  tf2::Transform gnss_to_enu_tf;
-  tf2::fromMsg(pose_with_covariance_->pose.pose, gnss_to_enu_tf);
+  tf2::Transform gnss_to_mgrs_tf;
+  tf2::fromMsg(pose_with_covariance_->pose.pose, gnss_to_mgrs_tf);
 
   if (odom_frame_.empty()) {
-    send_transform(gnss_to_enu_tf, enu_frame_, gnss_frame_);
+    sendTransform(gnss_to_mgrs_tf, stamp, mgrs_frame_, gnss_frame_);
     return;
   }
 
@@ -120,19 +116,19 @@ void GNSSPosePublisher::publishTF()
   if (!odom_to_gnss_tf) {
     return;
   }
-  const auto odom_to_enu_tf = gnss_to_enu_tf * *odom_to_gnss_tf;
+  const auto odom_to_mgrs_tf = gnss_to_mgrs_tf * *odom_to_gnss_tf;
 
   if (map_frame_.empty()) {
-    send_transform(odom_to_enu_tf, enu_frame_, odom_frame_);
+    sendTransform(odom_to_mgrs_tf, stamp, mgrs_frame_, odom_frame_);
     return;
   }
 
-  const auto enu_to_map_tf = getTransform(map_frame_, enu_frame_, stamp);
-  if (!enu_to_map_tf) {
+  const auto mgrs_to_map_tf = getTransform(map_frame_, mgrs_frame_, stamp);
+  if (!mgrs_to_map_tf) {
     return;
   }
-  const auto odom_to_map_tf = *enu_to_map_tf * odom_to_enu_tf;
-  send_transform(odom_to_map_tf, map_frame_, odom_frame_);
+  const auto odom_to_map_tf = *mgrs_to_map_tf * odom_to_mgrs_tf;
+  sendTransform(odom_to_map_tf, stamp, map_frame_, odom_frame_);
 }
 
 void GNSSPosePublisher::initializeLocalCartesian(const std::string & origin_grid)
@@ -153,6 +149,19 @@ void GNSSPosePublisher::initializeLocalCartesian(const std::string & origin_grid
     RCLCPP_ERROR(get_logger(), "Failed to initialize local cartesian origin: %s", e.what());
     rclcpp::shutdown();
   }
+}
+
+void GNSSPosePublisher::sendTransform(
+  const tf2::Transform & tf, const rclcpp::Time & stamp, const std::string & frame_id,
+  const std::string & child_frame_id)
+{
+  geometry_msgs::msg::TransformStamped transform;
+  transform.header.stamp = stamp;
+  transform.header.frame_id = frame_id;
+  transform.child_frame_id = child_frame_id;
+  transform.transform = tf2::toMsg(tf);
+
+  tf_broadcaster_->sendTransform(transform);
 }
 
 std::optional<tf2::Transform> GNSSPosePublisher::getTransform(
