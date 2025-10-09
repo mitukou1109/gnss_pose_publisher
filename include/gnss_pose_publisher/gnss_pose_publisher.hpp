@@ -27,21 +27,25 @@ private:
 
   void headingCallback(const geometry_msgs::msg::QuaternionStamped::SharedPtr msg);
 
-  void publishTF();
+  void publishPose();
 
   void initializeLocalCartesian(const std::string & origin_grid);
+
+  void sendTransform(
+    const tf2::Transform & tf, const rclcpp::Time & stamp, const std::string & frame_id,
+    const std::string & child_frame_id);
 
   std::optional<tf2::Transform> getTransform(
     const std::string & target_frame, const std::string & source_frame,
     const rclcpp::Time & stamp) const;
 
-  std::string enu_frame_;
+  std::string mgrs_frame_;
   std::string map_frame_;
   std::string odom_frame_;
   std::string gnss_frame_;
+  std::string gnss_enu_frame_;
   int8_t status_threshold_;
   double transform_tolerance_;
-  double tf_publish_rate_;
 
   geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr pose_with_covariance_;
 

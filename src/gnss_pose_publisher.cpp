@@ -17,13 +17,13 @@ GNSSPosePublisher::GNSSPosePublisher(
   const std::string & node_name, const std::string & ns, const rclcpp::NodeOptions & options)
 : Node(node_name, ns, options)
 {
-  enu_frame_ = declare_parameter<std::string>("enu_frame");
+  mgrs_frame_ = declare_parameter<std::string>("mgrs_frame");
   map_frame_ = declare_parameter<std::string>("map_frame");
   odom_frame_ = declare_parameter<std::string>("odom_frame");
   gnss_frame_ = declare_parameter<std::string>("gnss_frame");
+  gnss_enu_frame_ = declare_parameter<std::string>("gnss_enu_frame");
   status_threshold_ = declare_parameter<int>("status_threshold");
   transform_tolerance_ = declare_parameter<double>("transform_tolerance");
-  tf_publish_rate_ = declare_parameter<double>("tf_publish_rate");
 
   initializeLocalCartesian(declare_parameter<std::string>("local_cartesian_origin_grid"));
 
@@ -40,9 +40,6 @@ GNSSPosePublisher::GNSSPosePublisher(
 
   heading_sub_ = create_subscription<geometry_msgs::msg::QuaternionStamped>(
     "gnss/heading", 1, std::bind(&GNSSPosePublisher::headingCallback, this, std::placeholders::_1));
-
-  publish_tf_timer_ = create_wall_timer(
-    rclcpp::Rate(tf_publish_rate_).period(), std::bind(&GNSSPosePublisher::publishTF, this));
 }
 
 void GNSSPosePublisher::fixCallback(const sensor_msgs::msg::NavSatFix::SharedPtr msg)
@@ -57,9 +54,10 @@ void GNSSPosePublisher::fixCallback(const sensor_msgs::msg::NavSatFix::SharedPtr
 
   if (!pose_with_covariance_) {
     pose_with_covariance_ = std::make_shared<geometry_msgs::msg::PoseWithCovarianceStamped>();
+    pose_with_covariance_->header.frame_id = mgrs_frame_;
   }
 
-  pose_with_covariance_->header = msg->header;
+  pose_with_covariance_->header.stamp = msg->header.stamp;
 
   auto & pose = pose_with_covariance_->pose;
   try {
@@ -75,7 +73,7 @@ void GNSSPosePublisher::fixCallback(const sensor_msgs::msg::NavSatFix::SharedPtr
     pose.covariance[i * 6 + i] = msg->position_covariance[i * 3 + i];
   }
 
-  pose_with_covariance_pub_->publish(*pose_with_covariance_);
+  publishPose();
 }
 
 void GNSSPosePublisher::headingCallback(const geometry_msgs::msg::QuaternionStamped::SharedPtr msg)
@@ -84,55 +82,49 @@ void GNSSPosePublisher::headingCallback(const geometry_msgs::msg::QuaternionStam
     return;
   }
 
-  pose_with_covariance_->header = msg->header;
-  pose_with_covariance_->pose.pose.orientation = msg->quaternion;
-  pose_with_covariance_pub_->publish(*pose_with_covariance_);
+  if (
+    std::isnan(msg->quaternion.x) || std::isnan(msg->quaternion.y) ||
+    std::isnan(msg->quaternion.z) || std::isnan(msg->quaternion.w)) {
+    return;
+  }
+
+  tf2::Quaternion heading_quat;
+  tf2::fromMsg(msg->quaternion, heading_quat);
+  heading_quat = tf2::Quaternion({0, 0, 1}, M_PI_2) * heading_quat.inverse();
+
+  pose_with_covariance_->header.stamp = msg->header.stamp;
+  pose_with_covariance_->pose.pose.orientation = tf2::toMsg(heading_quat);
+
+  publishPose();
+  sendTransform(tf2::Transform(heading_quat), msg->header.stamp, gnss_frame_, gnss_enu_frame_);
 }
 
-void GNSSPosePublisher::publishTF()
+void GNSSPosePublisher::publishPose()
 {
   if (!pose_with_covariance_) {
     return;
   }
 
-  const auto stamp = now();
-  const auto send_transform = [this, stamp](
-                                const tf2::Transform & tf, const std::string & frame_id,
-                                const std::string & child_frame_id) {
-    geometry_msgs::msg::TransformStamped transform;
-    transform.header.stamp = stamp;
-    transform.header.frame_id = frame_id;
-    transform.child_frame_id = child_frame_id;
-    transform.transform = tf2::toMsg(tf);
+  pose_with_covariance_pub_->publish(*pose_with_covariance_);
 
-    tf_broadcaster_->sendTransform(transform);
-  };
+  tf2::Transform gnss_to_mgrs_tf;
+  tf2::fromMsg(pose_with_covariance_->pose.pose, gnss_to_mgrs_tf);
 
-  tf2::Transform gnss_to_enu_tf;
-  tf2::fromMsg(pose_with_covariance_->pose.pose, gnss_to_enu_tf);
-
-  if (odom_frame_.empty()) {
-    send_transform(gnss_to_enu_tf, enu_frame_, gnss_frame_);
-    return;
-  }
-
-  const auto odom_to_gnss_tf = getTransform(gnss_frame_, odom_frame_, stamp);
+  const auto odom_to_gnss_tf =
+    getTransform(gnss_frame_, odom_frame_, pose_with_covariance_->header.stamp);
   if (!odom_to_gnss_tf) {
     return;
   }
-  const auto odom_to_enu_tf = gnss_to_enu_tf * *odom_to_gnss_tf;
+  const auto odom_to_mgrs_tf = gnss_to_mgrs_tf * *odom_to_gnss_tf;
 
-  if (map_frame_.empty()) {
-    send_transform(odom_to_enu_tf, enu_frame_, odom_frame_);
+  const auto mgrs_to_map_tf =
+    getTransform(map_frame_, mgrs_frame_, pose_with_covariance_->header.stamp);
+  if (!mgrs_to_map_tf) {
     return;
   }
+  const auto odom_to_map_tf = *mgrs_to_map_tf * odom_to_mgrs_tf;
 
-  const auto enu_to_map_tf = getTransform(map_frame_, enu_frame_, stamp);
-  if (!enu_to_map_tf) {
-    return;
-  }
-  const auto odom_to_map_tf = *enu_to_map_tf * odom_to_enu_tf;
-  send_transform(odom_to_map_tf, map_frame_, odom_frame_);
+  sendTransform(odom_to_map_tf, pose_with_covariance_->header.stamp, map_frame_, odom_frame_);
 }
 
 void GNSSPosePublisher::initializeLocalCartesian(const std::string & origin_grid)
@@ -155,6 +147,19 @@ void GNSSPosePublisher::initializeLocalCartesian(const std::string & origin_grid
   }
 }
 
+void GNSSPosePublisher::sendTransform(
+  const tf2::Transform & tf, const rclcpp::Time & stamp, const std::string & frame_id,
+  const std::string & child_frame_id)
+{
+  geometry_msgs::msg::TransformStamped transform;
+  transform.header.stamp = stamp;
+  transform.header.frame_id = frame_id;
+  transform.child_frame_id = child_frame_id;
+  transform.transform = tf2::toMsg(tf);
+
+  tf_broadcaster_->sendTransform(transform);
+}
+
 std::optional<tf2::Transform> GNSSPosePublisher::getTransform(
   const std::string & source_frame, const std::string & target_frame,
   const rclcpp::Time & stamp) const
@@ -170,7 +175,7 @@ std::optional<tf2::Transform> GNSSPosePublisher::getTransform(
       tf);
   } catch (const tf2::TransformException & ex) {
     RCLCPP_WARN_THROTTLE(
-      get_logger(), *std::const_pointer_cast<rclcpp::Clock>(get_clock()), 10000, "%s", ex.what());
+      get_logger(), *std::const_pointer_cast<rclcpp::Clock>(get_clock()), 10000, ex.what());
     return std::nullopt;
   }
 
